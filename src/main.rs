@@ -29,6 +29,9 @@ fn main() -> std::io::Result<()> {
         Op::Replace(text_replaced, text_new) => {
             op_replace(targets.as_ref(), &text_replaced, &text_new)
         }, 
+        Op::SP => {
+            op_sp(targets.as_ref())
+        }, 
         _ => {
             panic!("Unknown operation");
         }
@@ -98,6 +101,9 @@ fn parse_args() -> Config {
             let p2 = args.next().expect("[Lack of inputs] (1) New Text");
             Op::Replace(p1, p2)
         }, 
+        "sp" => {
+            Op::SP
+        }, 
         _ => {
             Op::Unknown
         }
@@ -122,6 +128,7 @@ enum Op {
     Remove(usize), 
     RemoveTail(usize), 
     Replace(String, String), 
+    SP, 
     Unknown, 
 }
 
@@ -130,12 +137,22 @@ pub struct Filename {
     extension: Option<String>
 }
 
+impl Filename {
+    pub fn stem(&self) -> String {
+        String::from(&self.stem)
+    }
+    pub fn extension(&self) -> String {
+        String::from(self.extension.as_ref().unwrap_or(&"".to_string()))
+    }
+}
+
 impl std::ops::Deref for Filename {
     type Target = String;
     fn deref(&self) -> &Self::Target {
         &self.stem
     }
 }
+
 impl std::fmt::Display for Filename {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.extension {
@@ -146,15 +163,6 @@ impl std::fmt::Display for Filename {
                 write!(f, "{}", self.stem)
             }
         }
-    }
-}
-
-impl Filename {
-    pub fn stem(&self) -> String {
-        String::from(&self.stem)
-    }
-    pub fn extension(&self) -> String {
-        String::from(self.extension.as_ref().unwrap_or(&"".to_string()))
     }
 }
 
@@ -211,7 +219,7 @@ fn op_prompt(targets: &Vec<Filename>, results: &Vec<String>) -> bool {
     println!("Results after renaming: ");
 
     for (idx, filename) in targets.iter().enumerate() {
-        println!("[{}] {}  ->  {}", idx, filename, results[idx]);
+        println!("[{}] \n{}  ->  \n{}", idx, filename, results[idx]);
     }
 
     println!("\nConfirm (y/N)");
@@ -298,6 +306,67 @@ fn op_replace(targets: &Vec<Filename>, replaced: &str, object: &str) -> Box<Vec<
     Box::new(results)
 }
 
+fn op_sp(targets: &Vec<Filename>) -> Box<Vec<String>> {
+    fn split_time(filename: &str) -> (String, String, String) {
+        use ansi_term::Style;
+        use ansi_term::Color::{Blue, Red};
+
+        let re = Regex::new("20[0-9]{2}年[0-9]+月[0-9]+日[0-9_]*").unwrap();
+
+        if let Some(mat) = re.find(filename) {
+            let author = filename[..mat.start()].to_string();
+            let time = filename[mat.start()..mat.end()].to_string();
+            let comment = filename[mat.end()..].to_string();
+
+            println!("{}{}{}", author, Style::default().on(Blue).paint(&time), comment);
+
+            (author, time, comment)
+        } else {
+            println!("{}", Style::default().on(Red).paint(filename));
+            panic!();
+        }
+    }
+
+    fn reformat_time(residual: &str) -> String {
+        fn padding_number_2(num: &str) -> String {
+            assert!(num.len() > 0 && num.len() <= 2);
+
+            if num.len() == 1 {
+                ["0", num].join("")
+            } else {
+                num.to_string()
+            }
+        }
+        let (year, residual) = residual.split_once("年").unwrap();
+        let (month, residual) = residual.split_once("月").unwrap();
+        let (day, residual) = residual.split_once("日").unwrap();
+        let (hour, minute) = if let Some((hour, minute)) = residual.split_once("_"){
+            (padding_number_2(hour), minute.to_string())
+        } else {
+            ("".to_string(), "".to_string())
+        };
+
+        let month = padding_number_2(month);
+        let day = padding_number_2(day);
+
+        if hour == "" {
+            [year, &month, &day].join("")
+        } else {
+            [year, &month, &day, "_", &hour, &minute].join("")
+        }
+    }
+
+    let results = targets.iter()
+    .map(|filename| {
+        let (author, time, comment) = split_time(&filename);
+        let time_reformat = reformat_time(&time);
+        
+        format!("{}{}{}.{}", author, time_reformat, comment, filename.extension())
+    })
+    .collect::<Vec<String>>();
+
+    Box::new(results)
+}
 
 
 
