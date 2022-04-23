@@ -3,43 +3,55 @@ use std::any::type_name;
 use std::path::PathBuf;
 use std::fs;
 
-use regex::Regex;
+use pkr_rename::rename_proc::{self, Op};
 
+// https://stackoverflow.com/questions/57224310/when-i-run-my-rust-application-on-windows-the-coloring-works-with-cargo-run-but
+// https://github.com/ogham/rust-ansi-term/blob/master/src/windows.rs
+use ansi_term::enable_ansi_support;
 
 fn main() -> std::io::Result<()> {
+    enable_ansi_support().unwrap();
+    sub_main()?;
+    Ok(())
+}
+
+fn sub_main() -> std::io::Result<()> {
     let config = parse_args();
     println!("{:?}", config);
 
-    let targets: Box<Vec<Filename>> = list_files(&config.path);
+    let targets: Box<Vec<filename::Filename>> = list_files(&config.path);
     // println!("{:?}", targets);
 
     let results = match config.op {
         Op::Insert(text) => {
-            op_insert(targets.as_ref(), &text)
+            rename_proc::insert(targets, &text)
         },
         Op::InsertTail(text) => {
-            op_insert_tail(targets.as_ref(), &text)
+            rename_proc::insert_tail(targets, &text)
         }, 
         Op::Remove(n) => {
-            op_remove(targets.as_ref(), n)
+            rename_proc::remove(targets, n)
         }, 
         Op::RemoveTail(n) => {
-            op_remove_tail(targets.as_ref(), n)
+            rename_proc::remove_tail(targets, n)
         }
         Op::Replace(text_replaced, text_new) => {
-            op_replace(targets.as_ref(), &text_replaced, &text_new)
+            rename_proc::replace(targets, &text_replaced, &text_new)
         }, 
         Op::SP => {
-            op_sp(targets.as_ref())
+            rename_proc::sp(targets)
+        }, 
+        Op::SP2 => {
+            rename_proc::sp2(targets)
         }, 
         _ => {
             panic!("Unknown operation");
         }
     };
 
-    let answer = op_prompt(targets.as_ref(), results.as_ref());
+    let answer = confirm(results.as_ref());
     if answer {
-        op_execute(&config.path, targets.as_ref(), results.as_ref())?;
+        execute(&config.path, results.as_ref())?;
     }
 
     Ok(())
@@ -104,6 +116,9 @@ fn parse_args() -> Config {
         "sp" => {
             Op::SP
         }, 
+        "sp2" => {
+            Op::SP2
+        }, 
         _ => {
             Op::Unknown
         }
@@ -121,52 +136,10 @@ struct Config {
     op: Op, 
 }
 
-#[derive(Debug)]
-enum Op {
-    Insert(String), // ADD
-    InsertTail(String), 
-    Remove(usize), 
-    RemoveTail(usize), 
-    Replace(String, String), 
-    SP, 
-    Unknown, 
-}
 
-pub struct Filename {
-    stem: String, 
-    extension: Option<String>
-}
+use pkr_rename::filename;
 
-impl Filename {
-    pub fn stem(&self) -> String {
-        String::from(&self.stem)
-    }
-    pub fn extension(&self) -> String {
-        String::from(self.extension.as_ref().unwrap_or(&"".to_string()))
-    }
-}
-
-impl std::ops::Deref for Filename {
-    type Target = String;
-    fn deref(&self) -> &Self::Target {
-        &self.stem
-    }
-}
-
-impl std::fmt::Display for Filename {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.extension {
-            Some(ext) => {
-                write!(f, "{}.{}", self.stem, ext)
-            }, 
-            None => {
-                write!(f, "{}", self.stem)
-            }
-        }
-    }
-}
-
-pub fn list_files(path: &PathBuf) -> Box<Vec<Filename>> {
+pub fn list_files(path: &PathBuf) -> Box<Vec<filename::Filename>> {
     assert!(path.exists() && path.is_dir());
 
     let targets = path.read_dir().expect("The process ceased due to lack of permissons to access the directory (or maybe other causes)")
@@ -180,52 +153,29 @@ pub fn list_files(path: &PathBuf) -> Box<Vec<Filename>> {
     })
     .map(|file| {
         let file = file.path();
-        Filename {
-            stem: file.file_stem().expect("no file name").to_os_string().into_string().expect("Non-Utf-8 string are detected"),
-            extension: match file.extension() {
+        filename::Filename::new(
+            file.file_stem().expect("no file name").to_os_string().into_string().expect("Non-Utf-8 string are detected"), 
+            match file.extension() {
                 Some(ext) => Some( ext.to_os_string().into_string().expect("Non-Utf-8 string are detected") ), 
                 None => None
             }
-        }
+        )
     })
-    .collect::<Vec<Filename>>();
+    .collect::<Vec<filename::Filename>>();
 
-    Box::<Vec<Filename>>::new(targets)
+    Box::<Vec<filename::Filename>>::new(targets)
 }
 
-fn op_insert(targets: &Vec<Filename>, object: &str) -> Box<Vec<String>> {
-    let results = targets.iter()
-    .map(|filename| {
-        format!("{}{}", object, filename)
-    })
-    .collect::<Vec<String>>();
 
-    Box::new(results)
-}
-
-fn op_insert_tail(targets: &Vec<Filename>, object: &str) -> Box<Vec<String>> {
-    let results = targets.iter()
-    .map(|filename| {
-        format!("{}{}.{}", filename.stem(), object, filename.extension())
-    })
-    .collect::<Vec<String>>();
-
-    Box::new(results)
-}
-
-fn op_prompt(targets: &Vec<Filename>, results: &Vec<String>) -> bool {
-    assert_eq!(targets.len(), results.len());
-
+fn confirm(results: &Vec<filename::Res>) -> bool {
     println!("Results after renaming: ");
 
-    for (idx, filename) in targets.iter().enumerate() {
-        println!("[{}] \n{}  ->  \n{}", idx, filename, results[idx]);
+    for (idx, result) in results.iter().enumerate() {
+        println!("[{}] \n{}  ->\n{}", idx, result.orig_with_highlight(), result.alter_with_highlight());
     }
 
     println!("\nConfirm (y/N)");
-
-    let answer = prompt();
-    if answer == "y" { true } else { false }
+    if prompt() == "y" { true } else { false }
 }
 
 fn prompt() -> String {
@@ -238,136 +188,17 @@ fn prompt() -> String {
     String::from(answer.trim_end())
 }
 
-fn op_execute(root: &PathBuf, targets: &Vec<Filename>, results: &Vec<String>) -> std::io::Result<()> {
-    assert_eq!(targets.len(), results.len());
+fn execute(root: &PathBuf, results: &Vec<filename::Res>) -> std::io::Result<()> {
 
     let dir = root.as_path().to_str().expect("Non-Utf-8 string are detected");
-    for (idx, filename) in targets.iter().enumerate() {
+    for res in results.iter() {
         fs::rename(
-            format!("{}\\{}", dir, &filename), 
-            format!("{}\\{}", dir, &results[idx]
-        ))?;
+            format!("{}\\{}", dir, res.orig()), 
+            format!("{}\\{}", dir, res.alter())
+        )?;
     }
     Ok(())
 }
-
-fn op_remove(targets: &Vec<Filename>, n: usize) -> Box<Vec<String>> {
-    use std::iter::FromIterator;
-    // TODO: limit maximum # of characters that can be remove
-
-    let results = targets.iter()
-    .map(|filename| {
-        let chars: Vec<char> = filename.chars().collect();
-        // println!("{:?}", &chars[n..]);
-
-        format!("{}.{}", String::from_iter(chars[n..].iter()), filename.extension() )
-    })
-    .collect::<Vec<String>>();
-
-    Box::new(results)
-}
-
-fn op_remove_tail(targets: &Vec<Filename>, n: usize) -> Box<Vec<String>> {
-    use std::iter::FromIterator;
-    // TODO: limit maximum # of characters that can be remove
-
-    let results = targets.iter()
-    .map(|filename| {
-        let chars: Vec<char> = filename.chars().collect();
-        let length = chars.len();
-        // println!("{:?}", &chars[n..]);
-
-        format!("{}.{}", String::from_iter(chars[..(length - n)].iter()), filename.extension() )
-    })
-    .collect::<Vec<String>>();
-
-    Box::new(results)
-}
-
-// TODO: Now we use Escape to match literally, maybe add an option to determine if Regex syntax will be used
-fn op_replace(targets: &Vec<Filename>, replaced: &str, object: &str) -> Box<Vec<String>> {
-    let re = Regex::new(&regex::escape(replaced)).unwrap();
-    // let re = Regex::new(replaced).unwrap();
-
-    let results = targets.iter()
-    .map(|filename| {
-        if let Some(mat) = re.find(filename) {
-            let head_part = &filename[..mat.start()];
-            let tail_part = &filename[mat.end()..];
-
-            format!("{}{}{}.{}", head_part, object, tail_part, filename.extension() )
-        }
-        else {
-            format!("{}", filename)
-        }
-    })
-    .collect::<Vec<String>>();
-
-    Box::new(results)
-}
-
-fn op_sp(targets: &Vec<Filename>) -> Box<Vec<String>> {
-    fn split_time(filename: &str) -> (String, String, String) {
-        use ansi_term::Style;
-        use ansi_term::Color::{Blue, Red};
-
-        let re = Regex::new("20[0-9]{2}年[0-9]+月[0-9]+日[0-9_]*").unwrap();
-
-        if let Some(mat) = re.find(filename) {
-            let author = filename[..mat.start()].to_string();
-            let time = filename[mat.start()..mat.end()].to_string();
-            let comment = filename[mat.end()..].to_string();
-
-            println!("{}{}{}", author, Style::default().on(Blue).paint(&time), comment);
-
-            (author, time, comment)
-        } else {
-            println!("{}", Style::default().on(Red).paint(filename));
-            panic!();
-        }
-    }
-
-    fn reformat_time(residual: &str) -> String {
-        fn padding_number_2(num: &str) -> String {
-            assert!(num.len() > 0 && num.len() <= 2);
-
-            if num.len() == 1 {
-                ["0", num].join("")
-            } else {
-                num.to_string()
-            }
-        }
-        let (year, residual) = residual.split_once("年").unwrap();
-        let (month, residual) = residual.split_once("月").unwrap();
-        let (day, residual) = residual.split_once("日").unwrap();
-        let (hour, minute) = if let Some((hour, minute)) = residual.split_once("_"){
-            (padding_number_2(hour), minute.to_string())
-        } else {
-            ("".to_string(), "".to_string())
-        };
-
-        let month = padding_number_2(month);
-        let day = padding_number_2(day);
-
-        if hour == "" {
-            [year, &month, &day].join("")
-        } else {
-            [year, &month, &day, "_", &hour, &minute].join("")
-        }
-    }
-
-    let results = targets.iter()
-    .map(|filename| {
-        let (author, time, comment) = split_time(&filename);
-        let time_reformat = reformat_time(&time);
-        
-        format!("{}{}{}.{}", author, time_reformat, comment, filename.extension())
-    })
-    .collect::<Vec<String>>();
-
-    Box::new(results)
-}
-
 
 
 
@@ -378,9 +209,6 @@ pub fn print_type<T: ?Sized>(_: &T) {
 
 #[cfg(test)]
 mod tests {
-    // #![feature(test)]
-    // extern crate test;
-    // use test::Bencher;
     use super::*;
 
     #[test]
@@ -396,12 +224,17 @@ mod tests {
         assert_eq!(ass, chars);
     }
 
-    // #[bench]
-    // fn bench_list_file(b: &mut Bencher) {
-    //     b.iter(|| {
-    //         let _targets = list_files(&PathBuf::from("D:\\Steam"));
-    //     });
-    // }
+    #[test]
+    fn general_test() {
+        use std::path::PathBuf;
+
+        let path = PathBuf::from("D:\\");
+        let targets: Box<Vec<Filename>> = list_files(&path);
+        // println!("{:?}", targets);
+        rename_proc::sp2(targets);
+    
+        // let answer = confirm(targets.as_ref(), results.as_ref());
+    }
     
 }
 

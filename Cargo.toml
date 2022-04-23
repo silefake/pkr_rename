@@ -2,7 +2,7 @@
 name = "pkr_rename"
 version = "0.1.0"
 authors = ["User"]
-edition = "2018"
+edition = "2021"
 
 
 [dependencies]
